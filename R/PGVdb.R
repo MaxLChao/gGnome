@@ -3,8 +3,100 @@
 # also set up datafiles.json and get pointers to where the data folder and datafiles.json are being stored
 # will need to set up datafiles.json and data folder along with backups for each
 # probably would get bloat backing up data folder so that is a bit suspect.
-set_up_dev_build_PGV = {}
+create_PGV = function(directory = ".",
+                      inputgraphs = NA,
+                      cores = 10){
+  # check and initialize dt.inp if does not exist
+  if (is.na(inputgraphs)){
+    message("expecting input table, returning empty inputgraphs table: 
+            patient.id = id of patient,
+            name.col = name of sample,
+            graph.type = type of graph,
+            filepath = path to file,
+            tags = tags associated with patient id
+            title = title of plot, default will use name.col")
+    dt.inp = data.table(patient.id = NA, name.col = NA, 
+                        graph.type = NA, filepath = NA, 
+                        tags = NA, title = NA)
+    # when this is initialized, we should have a check to confirm that each
+    # of the file paths passed work.
+    return(dt.inp)
+  }
+  # check 1: if dir exists
+  if (dir.exists(directory)){
+    stop("must create a new directory for PGV instance")
+  } else{
+    directory = js_path(directory, js.type = "PGV", append = FALSE)
+  }
+  
+  # get the PGVdir.
+  # we have an issue with datafiles.json not existing...
+  # maybe read the datafiles0.json and then return save out to datafiles.json by 
+  # altering the meta filepath in pgv db
+  PGVdb = return_PGV_db(datafiles.json = normalizePath(paste0(directory, "/public/datafiles0.json")), 
+                data_folder = normalize.path(paste0(directory, "/public/data/")), 
+                PGV_public_dir = normalize.path(paste0(directory, "/public/"))
+                )
+  # alter meta path
+  PGVdb$datafiles.json = normalizePath(paste0(directory, "/public/datafiles.json"), )
+  # run check on inputgraphs -> validation function
 
+  
+  PGVdb = add_graphs(inputgraphs)
+  # next we pass this to our wrapper
+  add_graphs_PGV(inputgraphs, mc.cores = cores)
+  # then run return
+  push_PGV_db()
+  return(PGVdb)
+}
+
+PGVInput = setClass("PGVInput")
+PGVInput = R6::R6Class(classname = "PGVInput",
+                       public = list(
+                         table = NA,
+                         #' init: initializes table
+                         #' 
+                         #' 
+                         initialize = function(table){
+                           if (class(table) == "data.table"){
+                             self$table = table
+                             private$.validinput(self$table)
+                           }else{
+                             self$table = data.table(patient.id = NA, name.col = NA, 
+                                                     graph.type = NA, filepath = NA, 
+                                                     tags = NA, title = NA)
+                           }
+                           return(self)
+                         },
+                         #' adds graphs to table
+                         add = function(new.graphs){
+                           self$table = rbindlist(self$table, new.graphs)
+                           .validinput(private$table)
+                           return(self)
+                         }), 
+                       private = list(
+                         #' validate
+                         #' 
+                         .validinput = function(table){
+                           # is data.table?
+                           if(!is.data.table(table)){
+                             stop("not a data.table")
+                           }
+                           # check filepaths are all valid
+                           if (any(!file.exists(table$filepath))){
+                             vecpaths = which(!file.exists(table$filepath))
+                             stop(paste0("rows", vecpaths, " in table filepaths do not exist"))
+                           } 
+                           # check for if graph types make sense.
+                           graph.types = c("ggraph", "coverage", "gwalk", "tree")
+                           if (any(!(table$graph.type %in% graph.types))){
+                             vecpaths = which(!(table$graph.type %in% graph.types))
+                             stop(paste0("rows", vecpaths, " in table do not exist"))
+                           }
+                         }
+                       )
+                       
+                       )
 
 # so the file locs across prod vs dev is just where the two files are:
 # for prod: is flat with pgv
