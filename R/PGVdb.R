@@ -57,8 +57,8 @@ PGVInput = R6::R6Class(classname = "PGVInput",
                          #' init: initializes table
                          #' 
                          #' 
-                         initialize = function(table){
-                           if (class(table) == "data.table"){
+                         initialize = function(table=NULL){
+                           if (is(table,"data.table")){
                              self$table = table
                              private$.validinput(self$table)
                            }else{
@@ -95,8 +95,173 @@ PGVInput = R6::R6Class(classname = "PGVInput",
                            }
                          }
                        )
-                       
-                       )
+)
+
+# PGVDb class
+PGVdb = setClass("PGVdb")
+PGVdb = R6::R6Class(classname = "PGVdb",
+                    public = list(descriptors = NA,
+                                  patientkey = NA,
+                                  plots = NA,
+                                  ref = NA,
+                                  datafiles.json = NA,
+                                  settings.json = NA,
+                                  datafolder = NA,
+                                  initialize = function(datafiles.json=NA,
+                                                        datafolder=NA,
+                                                        PGV_public_dir=NA){
+                                    if (any(is.na(c(datafiles.json, datafolder, PGV_public_dir)))){
+                                      stop("please provide paths to the three inputs: datafiles.json in PGV, data folder in PGV and the public directory folder in PGV")
+                                    }
+                                    self$datafiles.json = datafiles.json
+                                    self$datafolder = datafolder
+                                    self$settings.json = file.path(PGV_public_dir, "settings.json")
+                                    # load in
+                                    if (file.exists(datafiles.json)){
+                                      df_json = jsonlite::fromJSON(datafiles.json)
+                                    } else {
+                                      stop("file path for datafiles.json does not exist")
+                                    }
+                                    if (!dir.exists(datafolder)){
+                                      stop("file path for data folder does not exist")
+                                    }
+                                    self$descriptors = lapply(names(df_json), function(x){
+                                      data.table::data.table(patient.id = x, 
+                                                             tags = df_json[[x]]$description)
+                                    }) %>% data.table::rbindlist(.,fill = T)
+                                    self$patientkey = names(df_json)
+                                    
+                                    # check refs 
+                                    refs = lapply(names(df_json), function(x){
+                                      df_json[[x]]$reference
+                                    })
+                                    if (length(unique(refs)) > 1){
+                                      warning(" multiple references found for samples in PGV")
+                                      warning(table(refs))
+                                    }
+                                    self$ref = unique(refs)
+                                    
+                                    # plots 
+                                    df_plots = lapply(names(df_json), function(x){
+                                      plots = as.data.table(df_json[[x]]$plots)
+                                      plots$patient.id = x
+                                      # give plots unique ids for people to drop 
+                                      plots$plot_id = paste0(x, "_", (1:nrow(df_json[[x]]$plots)))
+                                      return(plots)
+                                    }) %>% data.table::rbindlist(., fill = T)
+                                    # shoddy fix to issue where we change NULL values to NA.. might have to keep
+                                    # some of the weirdness to allow for the {} returns
+                                    is.na(df_plots) <- df_plots == "NULL"
+                                    
+                                    self$plots = df_plots
+                                    
+                                    # check for if the files listed in datafiles.json are there. 
+                                    # If not spit warning 
+                                    # for each file if expected file is missing
+                                    if (file.exists(paste0(PGV_public_dir, "/settings.json"))){
+                                      settings.js = file.path(paste0(PGV_public_dir, "/settings.json"))
+                                    } else {
+                                      warning("settings.json file not found in public dir.")
+                                      settings.js = "settings json file was not found. Replace this with path to settings.json"
+                                    }
+                                    # add file.source to df_plots if we are generating new plots
+                                    private$.valid_self(self, full_check = T)
+                                    return(self)
+                                  },
+                                  addgraphs = function(self, PGVInput){
+                                    
+                                  },
+                                  push = function(self, backup = TRUE){
+                                    private$.valid_self(self)
+                                    # clean up and remove added columns
+                                    
+                                    # plots -> drop them
+                                    self$plots[,plot_id:=NULL]
+                                    # self$plots[,file.source:=NULL]
+                                    #
+                                    pt_ids = unique(self$patientkey)
+                                    json_format = lapply(pt_ids, function(x){
+                                      description = self$descriptions[patient.id == x]$tags
+                                      plots_Df = self$plots[patient.id == x, !"patient.id"]
+                                      return(list(description = description, 
+                                                  reference = self$ref, 
+                                                  plots = plots_Df))
+                                    })
+                                    names(json_format) = pt_ids
+                                    
+                                    # here we save a backup version with date & time for now
+                                    file.rename(self$datafiles.json, 
+                                                paste0(self$datafiles.json,
+                                                       format(Sys.time(), "%Y%m%d_%H%M%S")))
+                                    # re json
+                                    
+                                    jsonlite::write_json(json_format, self$datafiles.json,
+                                                         pretty=TRUE, auto_unbox=TRUE, digits=4)
+                                  }
+                                  
+                    ),
+                    private = list(
+                      .valid_self = function(self, 
+                                             full_check = FALSE){
+                        # get patient IDs
+                        if (!file.exists(self$settings.json)){
+                          stop("stop settings.json path must be provided.")
+                        }
+                        # check reference
+                        if (!length(unique(self$references$patient.id)) == 
+                            length(self$references$patient.id)){
+                          stop("duplicate patient ids. found in references table")
+                        }
+                        # check description
+                        if (any(!(unique(self$descriptions$patient.id) %in% self$patientkey))){
+                          stop("patient ids were added to description tags that are not yet added. 
+         Please run add_patients_PGV to add patients before adding their 
+         tags.")
+                        }
+                        if (any(dim(unique(self$descriptions)) != dim(self$descriptions))){
+                          message( "non unique descriptions for patients in the json_db$descriptions found.
+          Removing them before proceeding")
+                          self$descriptions = unique(self$descriptions) 
+                        }
+                        #check that there are graphs for each patient added
+                        if (any(!(unique(self$patientkey) %in% unique(self$plots$patient.id)))){
+                          message("patient ids with no graphs were found. Dropping them.")
+                          ids_drop = self$patientkey[which(!(unique(self$patientkey) %in% 
+                                                                    unique(self$plots$patient.id)))]
+                          if (any(self$patientkey %in% ids_drop)){
+                            self$patientkey = self$patientkey[-which(self$patientkey %in% ids_drop)]
+                          }
+                          self$patientkey = self$patientkey[-which(self$patientkey %in% ids_drop)]
+                        }
+                        # check for graphs that do not have patient.id 
+                        
+                        # check file loc
+                        if (!file.exists(self$datafiles.json)){
+                          stop("file does not exist for json_db$datafiles.json")
+                        }
+                        # check write out location
+                        if (!dir.exists(self$datafolder)){
+                          stop("data folder does not exist")
+                        }
+                        # check that all patient graphs have source files exists.
+                        if (full_check){
+                          for (i in 1:nrow(self$plots)){
+                            if (!is.na(self$plots$source[i])){
+                              if (!file.exists(normalizePath(paste0(self$datafolder, "/",
+                                                                    self$plots$patient.id[i], "/",
+                                                                    self$plots$source[i])))){
+                                message("file not found for ", paste0(self$datafolder, "/",
+                                                                      self$plots$patient.id[i], "/",
+                                                                      self$plots$source[i]))
+                                warning("consider dropping row ", i, " in self$plots. ")
+                              }
+                            }
+                          }
+                          message("all files found and exists")
+                        }
+                      }  
+                    )
+                    )
 
 # so the file locs across prod vs dev is just where the two files are:
 # for prod: is flat with pgv
@@ -204,6 +369,9 @@ PGVInput = R6::R6Class(classname = "PGVInput",
       stop("No NAs allowed for ref. Ref must always be provided for all samples")
     }
   }
+  if ("cov.col" %in%  colnames(table_add) && any(is.na(table_add$cov.field))){
+    stop( "cov.col provided, cov.field cannot be empty")
+  }
   return(table_add)
 }
 # add new participants/patient IDs to the database
@@ -285,6 +453,7 @@ add_patients_PGV = function(json_db,
     # within the add_table and create unique labels probably
     new_graphs = add_graphs_PGV(json_db, 
                                 table_row = table_add[i,])
+    return(new_graphs)
   }, mc.cores = cores)
   l_graphs = l_graphs %>% 
       data.table::rbindlist(., fill = T)
