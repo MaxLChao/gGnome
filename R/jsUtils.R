@@ -1131,6 +1131,8 @@ cov2cov.js = function(cov, meta.js = NULL, js.type = 'gGnome.js', field = 'ratio
         if (length(invalid.seqnames) > 0){
             warning(sprintf('The coverage input includes sequence names that are not in the specified reference, and hence these sequence names will be excluded. These are the excluded sequences: %s', paste(as.character(invalid.seqnames), collapse = ', ')))
         }
+    } else {
+        stop("expecting file path to the settings.json, none specified")
     }
 
     if (!exists("sl")){

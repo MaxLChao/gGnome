@@ -1,13 +1,16 @@
-# one create PGV instance 
-# inside we have the add function to initialize the PGV datafile.json and get pointers to where all the files are
-# also set up datafiles.json and get pointers to where the data folder and datafiles.json are being stored
-# will need to set up datafiles.json and data folder along with backups for each
-# probably would get bloat backing up data folder so that is a bit suspect.
-create_PGV = function(directory = ".",
-                      inputgraphs = NA,
-                      cores = 10){
+#' Creates a PGV instance
+#' 
+#' inside we have the add function to initialize the PGV datafile.json and get pointers to where all the files are
+#'  also set up datafiles.json and get pointers to where the data folder and datafiles.json are being stored
+#'  will need to set up datafiles.json and data folder along with backups for each
+#' probably would get bloat backing up data folder so that is a bit suspect.
+#'   
+createPGV = function(directory = ".",
+                     inputgraphs = NA,
+                     cores = 10,
+                     ref = "hg19"){
   # check and initialize dt.inp if does not exist
-  if (is.na(inputgraphs)){
+  if (!inherits(PGVInput, "PGVInput")){
     message("expecting input table, returning empty inputgraphs table: 
             patient.id = id of patient,
             name.col = name of sample,
@@ -15,9 +18,7 @@ create_PGV = function(directory = ".",
             filepath = path to file,
             tags = tags associated with patient id
             title = title of plot, default will use name.col")
-    dt.inp = data.table(patient.id = NA, name.col = NA, 
-                        graph.type = NA, filepath = NA, 
-                        tags = NA, title = NA)
+    dt.inp = PGVInput$new()
     # when this is initialized, we should have a check to confirm that each
     # of the file paths passed work.
     return(dt.inp)
@@ -111,7 +112,8 @@ PGVdb = R6::R6Class(classname = "PGVdb",
                                                         datafolder=NA,
                                                         PGV_public_dir=NA){
                                     if (any(is.na(c(datafiles.json, datafolder, PGV_public_dir)))){
-                                      stop("please provide paths to the three inputs: datafiles.json in PGV, data folder in PGV and the public directory folder in PGV")
+                                      stop("please provide paths to the three inputs: datafiles.json in PGV, 
+                                           data folder in PGV and the public directory folder in PGV")
                                     }
                                     self$datafiles.json = datafiles.json
                                     self$datafolder = datafolder
@@ -136,10 +138,10 @@ PGVdb = R6::R6Class(classname = "PGVdb",
                                       df_json[[x]]$reference
                                     })
                                     if (length(unique(refs)) > 1){
-                                      warning(" multiple references found for samples in PGV")
+                                      warning("Multiple references found for samples in PGV")
                                       warning(table(refs))
                                     }
-                                    self$ref = unique(refs)
+                                    self$ref = unlist(unique(refs))
                                     
                                     # plots 
                                     df_plots = lapply(names(df_json), function(x){
@@ -168,9 +170,102 @@ PGVdb = R6::R6Class(classname = "PGVdb",
                                     private$.valid_self(self, full_check = T)
                                     return(self)
                                   },
-                                  addgraphs = function(self, PGVInput){
-                                    
+                                  #' work horse graph function
+                                  #' @details accepts PGVInput class and pushes it
+                                  #' 
+                                  #' @param PGVInput PGVInput class
+                                  #' @param cores number of cores to use
+                                  addgraphs = function(self, PGVInput, cores = 10){
+                                    if (inherits(PGVInput, "PGVInput")){
+                                      tab = PGVInput$table
+                                      # we have a huge mclapply here
+                                      tab$dirpaths = file.path(paste0(json_db$data_folder, 
+                                                                  "/", tab$patient.id))
+                                      if (any(unique(tab$patient.id))){
+                                        # keep track of new patients
+                                        newpats = tab$patient.id[!(dir.exists(tab$dirpaths))] %>% 
+                                          unique()
+                                        self$patientkey = c(self$patientkey, 
+                                                            newpats)
+                                      }
+                                      # from here we should add any missing dirs
+                                      if (any(!dir.exists(tab$dirpaths))){
+                                        # new patients
+                                        np = tab$dirpaths[!(dir.exists(tab$dirpaths))] %>% 
+                                          unique()
+                                        # make these directories
+                                        message("Making directories :", np)
+                                        dir.create(np)
+                                      }
+                                      nplots = parallel::mclapply(1:nrow(tab), function(x){
+                                        if (is.na(tab[x,]$title)){
+                                          tab[x,]$title = paste(tab[x,]$name.col,
+                                                                tab[x,]$graph.type)
+                                        }
+                                        if (tab[x,]$graph.type == "ggraph"){
+                                          bool = .genggjs(tab[x,], self)
+                                          if (bool){ # if value was generated, report the table:
+                                            gg.row = data.table(sample = tab[x,]$name.col,
+                                                                type = "genome",
+                                                                source = paste0(tab[x,]$name.col,".json"),
+                                                                title = tab[x,]$title,
+                                                                visible = TRUE,
+                                                                figure = NA,
+                                                                server = NA,
+                                                                uuid = NA,
+                                                                patient.id = tab[x,]$patient.id,
+                                                                plot_id = NA)
+                                            return(gg.row)
+                                          } else {
+                                            stop("failure of some sort for row ", 
+                                                 x, 
+                                                 "in PGVInput: ", 
+                                                 tab[x,])
+                                          }
+                                        } else if (tab[x,]$graph.type == "coverage"){
+                                          bool = .gencovjs(tab[x,], self)
+                                          if (bool){
+                                            cov.row = data.table(sample = tab[x,]$name.col,
+                                                                type = "coverage",
+                                                                source = paste0(tab[x,]$name.col,".json"),
+                                                                title = tab[x,]$title,
+                                                                visible = FALSE,
+                                                                figure = NA,
+                                                                server = NA,
+                                                                uuid = NA,
+                                                                patient.id = tab[x,]$patient.id,
+                                                                plot_id = NA)
+                                            return(cov.row)
+                                          }else {
+                                            stop("failure of some sort for row ", x, "in PGVInput: ", tab[x,])
+                                          }
+                                        }  else if (tab[x,]$graph.type == "gwalk"){
+                                          return()
+                                        }  else if (tab[x,]$graph.type == "tree"){
+                                          return()
+                                        } else {
+                                          return()
+                                        }
+                                        
+                                      }, mc.cores = cores) 
+                                      errs = sapply(nplots, function(x){
+                                        inherits(x, "try-error")
+                                      }) %>% unlist()
+                                      # check if we had any errors in our rows
+                                      if (length(which(errs)) > 1){
+                                        warning("dropping ", which(errs), "rows from PGVinput due to failures.")
+                                        nplots = nplots[!errs]
+                                      }
+                                      # creating a list
+                                      nplots = nplots %>% rbindlist()
+                                      
+                                    }else {
+                                      stop("PGVInput must be the class PGVInput")
+                                    }
                                   },
+                                  #' push object
+                                  #' @details pushes object
+                                  #' 
                                   push = function(self, backup = TRUE){
                                     private$.valid_self(self)
                                     # clean up and remove added columns
@@ -197,6 +292,18 @@ PGVdb = R6::R6Class(classname = "PGVdb",
                                     
                                     jsonlite::write_json(json_format, self$datafiles.json,
                                                          pretty=TRUE, auto_unbox=TRUE, digits=4)
+                                  },
+                                  #' Refresh object
+                                  #' @details refreshes object from source given self. Used for any
+                                  #' changes since the object was deserialized
+                                  #' 
+                                  refreshPGV = function(self){
+                                    return(self$initialize(datafiles.json = self$datafiles.json,
+                                                           datafolder = self$datafolder,
+                                                           PGV_public_dir =  file.path(gsub(self$settings.json, 
+                                                                                  pattern = "settings.json", 
+                                                                                  replacement = ""))
+                                                          ))
                                   }
                                   
                     ),
@@ -797,7 +904,7 @@ revert_PGV_db = function(current_json_path, json_db,
 #'
 #' Generate the json files that will represent your gGraphs
 #'
-#' @param data either a path to a TSV/CSV or a data.table
+#' @param table_row either a path to a TSV/CSV or a data.table
 #' @param outdir the path to the PGV/gGnome.js repository clone
 #' 
 #' @details returns out a json to the save via R6 capabilities
@@ -995,42 +1102,129 @@ gen_gw_json_PGV= function(table_row, json_db){
     gw$json(filename = gw.js, verbose = TRUE,
             annotation = table_row$annotation[[1]],
             include.graph = FALSE)
-    # sn.ref = parse.js.seqlengths(json_db$settings.js, 
-    #                              js.type = "PGV", 
-    #                              ref = table_row$ref) %>% names
-    # sn.walks = seqlevels(gw)
-    # sn.walks.only = sn.walks[!sn.walks %in% sn.ref]
-    # gw.reduced = gw %&% sn.ref
-    # if (length(sn.walks.only) > 0) { 
-    #   gw.reduced = gw.reduced[gw.reduced %^% sn.walks.only == FALSE]
-    # }
-    # if (gw.reduced$length == 0){
-    #   warning(sprintf('Provided gWalk .rds for sample %s contained walks, but they 
-    #                   all involved sequences not contained in the chosen reference 
-    #                   genome, so no walks json will be produced! Here is an example 
-    #                   sequence name from your gWalks: "%s". And here is an example 
-    #                   sequence from the reference used by PGV: "%s"', 
-    #                   table_row$name.col, 
-    #                   sn.walks.only[1],
-    #                   sn.ref[1]))
-    #     return(NA)
-    #   }
-    #   if (length(sn.walks.only) > 0) {
-    #     gw.excluded = gw %&% sn.walks.only
-    #   } else {
-    #     gw.excluded = gW()
-    #   }
-    #   if (gw.excluded$length > 0) {
-    #     warning(sprintf('%i walks excluded because they (fully or partially) 
-    #                     fell outside of reference ranges.', 
-    #                     gw.excluded$length))
-    #   }
-      # also.print.graph.to.json = ifelse(js.type == "PGV", FALSE, TRUE)
-      # gw.js = gw.reduced$json(filename = gw.js, verbose = TRUE, 
-      #                         annotation = table_row$annotation[[1]], 
-      #                         include.graph = FALSE)
-    
+
     } else {
       message(gw.js, ' found. Will not overwrite it.')
     }
+}
+
+
+#' @name .genggjs
+#' @description internal
+#'
+#' Generate the json files that will represent your gGraphs
+#'
+#' @param table_row row in PGVInput
+#' @param json_db PGVdb obj
+#' 
+#' @details returns out a T/F to show if job was successful
+#' Also creates a json
+.genggjs = function(table_row, json_db){
+  gg.js = file.path(table_row$dirpaths, 
+                    paste0(table_row$name.col,".json"))
+  if (file.exists(gg.js)){
+    warning("file ", gg.js, "already exists. Delete if you want to update.")
+    return(FALSE)
+  } else {
+    print(paste0("reading in ", table_row$filepath))
+    # TODO: at some point we need to do a sanity check to see that a valid rds of gGraph was provided
+    if (grepl(table_row$filepath, pattern = ".rds")){
+      gg = readRDS(table_row$filepath)
+    } else{
+      message("expected .rds ending for gGraph. Still attempting to read: ", table_row$filepath)
+      gg = readRDS(table_row$filepath)
+    }
+    if (inherits(gg, "gGraph")){  
+      sl = parse.js.seqlengths(json_db$settings.js, 
+                               js.type = "PGV", 
+                               ref = json_db$ref)
+      # check for overlap in sequence names
+      gg.reduced = gg[seqnames %in% names(sl)]
+      if (length(gg.reduced) == 0){
+        stop(sprintf('There is no overlap between the sequence names in the reference 
+                     used by PGV and the sequences in your gGraph. Here is an 
+                     example sequence from your gGraph: "%s". And here is an 
+                     example sequence from the reference used by gGnome.js: "%s"', 
+                     seqlevels(gg$nodes$gr)[1], names(sl)[1]))
+      }
+      # annotations
+      annotation = c("simple", "bfb", "chromoplexy", "chromothripsis", "del", "dm", "dup",
+                     "pyrgo", "qrdel", "qrdup", "qrp", "rigma", "tic", "tyfonas")
+      # sedge.id or other field
+      if ("events" %in% names(gg$meta)){
+        # probably check for other cid.field names?
+        #field = 'sedge.id'
+        refresh(gg[seqnames %in% names(sl)])$json(filename = gg.js,
+                                                  verbose = TRUE,
+                                                  annotation = table_row$annotation[[1]])
+        return(TRUE)
+        #cid.field = field)
+      } else {
+        refresh(gg[seqnames %in% names(sl)])$json(filename = gg.js,
+                                                  verbose = TRUE)
+        return(TRUE)
+      }
+    } else {
+      warning(table_row$gg.col, " rds read was not a gGraph")
+      return(FALSE)
+    }
+  }
+}
+
+#' @name .gencovjs
+#' @description internal
+#'
+#' Generate the json files that will represent your gGraphs
+#'
+#' @param table_row row in PGVInput
+#' @param json_db PGVdb obj
+#' 
+#' @details returns out a T/F to show if job was successful
+#' Also creates a json
+.gencovjs = function(table_row, json_db){
+  cov_dir = table_row$dirpaths
+  covfn = file.path(paste0(table_row$dirpaths, "/",
+                           table_row$name.col, "-coverage.arrow"))
+  skip_cov = FALSE
+  if (!file.exists(covfn)){
+    if (is.na(table_row$cov.field)){
+      warning(paste0('No coverage field was provided for ', 
+                     table_row$filepath, 
+                     ' so no coverage will be generated.'))
+      skip_cov = TRUE
+    } else {
+      if (is.na(table_row$cov.col)){
+        warning(paste0('No coverage data was provided for ', 
+                       table_row$filepath, 
+                       ' so no coverage will be generated.'))
+        skip_cov = TRUE
+      } else {
+        cov_input_file = table_row$filepath
+        if (is.na(cov_input_file)){
+          warning(paste0('No coverage file was provided for ', table_row$filepath, 
+                         ' so no coverage will be generated.'))
+          skip_cov = TRUE
+        } else {
+          if (!file.exists(cov_input_file)){
+            warning(paste0('Input coverage file does not exist for name: ', 
+                           table_row$filepath, 
+                           ' so no coverage will be generated.'))
+            skip_cov = TRUE
+          }}}
+    }
+    if (skip_cov){
+      return(FALSE)
+    } else {
+      # load gGraph
+      cov2arrowPGV(cov_input_file, 
+                   field = table_row$cov.field,
+                   meta.js = json_db$settings.js, #gg = gg, 
+                   ref = table_row$ref,
+                   output_file = covfn)
+      return(TRUE)
+    }
+  } else {
+    message(covfn, ' found. Will not overwrite it.')
+    return(FALSE)
+  }
 }
